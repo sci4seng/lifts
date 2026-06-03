@@ -1,0 +1,20 @@
+# NEVER commit knit outputs — they live on Pages/Drive, not in PRs
+vignettes/*.html
+vignettes/*_files/
+vignettes/*_cache/
+
+# NEVER commit user-specific tool paths
+tools.yml
+
+# NEVER commit raw data — manifest only
+data/
+
+# build artifacts
+__pycache__/
+*.pyc
+.DS_Store
+__MACOSX/
+.Rhistory
+.RData
+.Rproj.user/
+*.bak
