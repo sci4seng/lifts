@@ -19,7 +19,7 @@ set.seed(seed)
 ```{r warning=FALSE, message=FALSE}
 require(kaiaulu); require(data.table); require(stringi)
 require(knitr); require(yaml); require(jsonlite)
-source("functions.R")
+source("../R/functions.R")
 ```
 
 # Introduction
@@ -140,7 +140,7 @@ out <- data.table(
   span_days       = span_days,
   seed            = seed
 )
-fwrite(out, "../../paper/outputs/lift_bugs_helix.csv")
+fwrite(out, "../../core/paper/outputs/lift_bugs_helix.csv")
 kable(out)
 ```
 

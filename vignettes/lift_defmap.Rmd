@@ -19,7 +19,7 @@ set.seed(seed)
 ```{r warning=FALSE, message=FALSE}
 require(kaiaulu); require(data.table); require(stringi)
 require(knitr); require(yaml); require(magrittr)
-source("functions.R")
+source("../R/functions.R")
 ```
 
 # Introduction
@@ -80,6 +80,6 @@ out <- data.table(project       = "helix",
                   total_leaked  = sum(phases$leaked,    na.rm = TRUE),
                   n_phases      = nrow(phases),
                   seed          = seed)
-fwrite(out, "../../paper/outputs/lift_defmap_helix.csv")
+fwrite(out, "../../core/paper/outputs/lift_defmap_helix.csv")
 kable(out)
 ```

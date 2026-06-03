@@ -2,7 +2,7 @@ project:
   website: https://github.com/apache/openssl
 
 version_control:
-  log: /Users/timm/gits/timm/icse27theories/data/openssl/git_repo/.git
+  log: /Users/timm/gits/sci4seng/data/openssl/git_repo/.git
   log_url: https://github.com/apache/openssl
   branch:
     - master

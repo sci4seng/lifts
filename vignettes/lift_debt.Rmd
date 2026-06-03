@@ -23,7 +23,7 @@ require(stringi)
 require(knitr)
 require(yaml)
 require(magrittr)
-source("functions.R")
+source("../R/functions.R")
 ```
 
 # Introduction
@@ -138,7 +138,7 @@ out <- data.table(
   window_days       = window_days,
   seed              = seed
 )
-fwrite(out, "../../paper/outputs/lift_debt_helix.csv")
+fwrite(out, "../../core/paper/outputs/lift_debt_helix.csv")
 kable(out)
 ```
 

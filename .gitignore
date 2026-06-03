@@ -6,6 +6,10 @@ vignettes/*_cache/
 # NEVER commit user-specific tool paths
 tools.yml
 
+# NEVER commit downloaded tool binaries — install paths only
+tools/
+.venv/
+
 # NEVER commit raw data — manifest only
 data/
 

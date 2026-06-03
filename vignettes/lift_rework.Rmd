@@ -19,7 +19,7 @@ set.seed(seed)
 ```{r warning=FALSE, message=FALSE}
 require(kaiaulu); require(data.table); require(stringi)
 require(knitr); require(yaml); require(magrittr)
-source("functions.R")
+source("../R/functions.R")
 ```
 
 # Introduction
@@ -84,6 +84,6 @@ out <- data.table(project        = "helix",
                   n_windows       = nrow(fr),
                   window_days     = window_days,
                   seed            = seed)
-fwrite(out, "../../paper/outputs/lift_rework_helix.csv")
+fwrite(out, "../../core/paper/outputs/lift_rework_helix.csv")
 kable(out)
 ```

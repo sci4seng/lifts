@@ -884,6 +884,75 @@ compute_born_pat_rate         <- function(refactorings, gof_per_tag) NA_real_
 #' @export
 compute_born_leg_rate         <- function(project_git, patterned_files) NA_real_
 
+# ---- Jira issue extraction ----------------------------------------------
+
+#' Extract Jira Issues and Comments for a Project
+#'
+#' Reads every \code{*.json} dump under the project's
+#' \code{issue_tracker$jira$project_key_1$issues} and
+#' \code{issue_comments} directories, runs \code{parse_jira} on each,
+#' and row-binds the result. Returns a named list with two
+#' data.tables, mirroring \code{parse_jira}'s schema.
+#'
+#' The issues directory typically holds issue-only dumps; the
+#' issue_comments directory holds dumps that include both. Parsing
+#' both and de-duplicating on \code{issue_key} keeps the union without
+#' double-counting.
+#'
+#' @param project_conf A parsed kaiaulu project yaml (output of
+#'   \code{parse_config}). Must contain
+#'   \code{issue_tracker$jira$project_key_1$issues} and
+#'   \code{issue_tracker$jira$project_key_1$issue_comments}.
+#' @return list with \code{issues} (data.table, one row per issue)
+#'   and \code{comments} (data.table, one row per comment).
+#' @export
+lift_project_jira <- function(project_conf) {
+  jira_conf <- project_conf$issue_tracker$jira$project_key_1
+  if (is.null(jira_conf)) {
+    stop("No issue_tracker$jira$project_key_1 in project_conf")
+  }
+
+  # kaiaulu::parse_jira takes a directory and globs everything in it,
+  # including .DS_Store. Stage just the .json files into a clean
+  # tempdir to avoid choking the JSON reader on Mac sidecar files.
+  stage_jsons <- function(src_dir) {
+    if (is.null(src_dir) || !dir.exists(src_dir)) return(NULL)
+    jsons <- list.files(src_dir, pattern = "\\.json$",
+                        full.names = TRUE)
+    if (length(jsons) == 0) return(NULL)
+    td <- tempfile("jira_stage_"); dir.create(td)
+    file.copy(jsons, td)
+    td
+  }
+
+  parse_dir <- function(src_dir) {
+    staged <- stage_jsons(src_dir)
+    if (is.null(staged)) {
+      return(list(issues = data.table(), comments = data.table()))
+    }
+    kaiaulu::parse_jira(staged)
+  }
+
+  parts <- list(parse_dir(jira_conf$issues),
+                parse_dir(jira_conf$issue_comments))
+
+  all_issues   <- rbindlist(lapply(parts, `[[`, "issues"),
+                            fill = TRUE)
+  all_comments <- rbindlist(lapply(parts, `[[`, "comments"),
+                            fill = TRUE)
+
+  # Issues dir and issue_comments dir overlap on issue_key
+  if (nrow(all_issues) > 0) {
+    all_issues <- unique(all_issues, by = "issue_key")
+  }
+  if (nrow(all_comments) > 0) {
+    all_comments <- unique(all_comments,
+                           by = c("issue_key", "comment_id"))
+  }
+
+  list(issues = all_issues, comments = all_comments)
+}
+
 # ---- Utility -------------------------------------------------------------
 
 `%||%` <- function(a, b) if (is.null(a) || length(a) == 0) b else a

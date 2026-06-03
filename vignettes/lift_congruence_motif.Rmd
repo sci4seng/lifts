@@ -19,7 +19,7 @@ set.seed(seed)
 ```{r warning=FALSE, message=FALSE}
 require(kaiaulu); require(data.table); require(stringi)
 require(knitr); require(yaml); require(magrittr); require(igraph)
-source("functions.R")
+source("../R/functions.R")
 ```
 
 # Introduction
@@ -205,7 +205,7 @@ single-shot verdict against the real network's coordination signal.
 # Outputs
 
 ```{r}
-dir.create("../outputs", showWarnings = FALSE)
+dir.create("../../core/paper/outputs", showWarnings = FALSE)
 out <- data.table(
   project           = "helix",
   Triangle          = counts$Triangle,
@@ -218,7 +218,7 @@ out <- data.table(
   n_edges           = igraph::ecount(g),
   seed              = seed
 )
-fwrite(out, "../outputs/lift_congruence_motif_helix.csv")
+fwrite(out, "../../core/paper/outputs/lift_congruence_motif_helix.csv")
 kable(out)
 ```
 

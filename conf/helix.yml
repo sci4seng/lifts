@@ -2,7 +2,7 @@ project:
   website: https://helix.apache.org
 
 version_control:
-  log: /Users/timm/gits/timm/icse27theories/data/helix/git_repo/.git
+  log: /Users/timm/gits/sci4seng/data/helix/git_repo/.git
   log_url: https://github.com/apache/helix
   branch:
     - master
@@ -12,8 +12,8 @@ issue_tracker:
     project_key_1:
       domain: https://issues.apache.org/jira
       project_key: HELIX
-      issues: /Users/timm/gits/timm/icse27theories/data/helix/jira/issues/
-      issue_comments: /Users/timm/gits/timm/icse27theories/data/helix/jira/issue_comments/
+      issues: /Users/timm/gits/sci4seng/data/helix/jira/issues/
+      issue_comments: /Users/timm/gits/sci4seng/data/helix/jira/issue_comments/
 
 commit_message_id_regex:
   issue_id: HELIX-[0-9]+

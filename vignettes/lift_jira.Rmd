@@ -1,0 +1,151 @@
+---
+title: "Lift — Jira Issues and Comments (Helix, Camel)"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteIndexEntry{Lift Jira}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+rm(list = ls())
+seed <- 1
+set.seed(seed)
+```
+
+```{r warning=FALSE, message=FALSE}
+require(kaiaulu); require(data.table); require(stringi)
+require(knitr); require(yaml); require(magrittr); require(jsonlite)
+source("../R/functions.R")
+```
+
+# Introduction
+
+This notebook extracts Jira issues and their comments for the two
+projects in the MYTHS family that ship with a Jira dump on disk:
+Apache Helix and Apache Camel. Both dumps live under
+`data/<project>/jira/issues/` and `data/<project>/jira/issue_comments/`.
+
+The extraction uses `kaiaulu::parse_jira`, which returns a named list
+of two data.tables — `issues` (one row per issue) and `comments`
+(one row per comment, joinable to issues on `issue_key`).
+
+Two known pitfalls flagged in `kaiaulu_notes/known_bugs.md`:
+
+1. `parse_jira` does not return a flat table; it returns
+   `list(issues, comments)`. Code that treats it as flat will silently
+   break.
+2. Filtering `issue_status` on `c("Closed","Resolved")` (as kaiaulu's
+   own `metric.R` does) is broken on the Apache jira dump. The
+   correct filter is `issue_status == "Done"`.
+3. Installed `kaiaulu::parse_jira` takes a **directory** path
+   (not a file) and chokes on `.DS_Store`.
+
+The helper `lift_project_jira(project_conf)` in `R/functions.R`
+encapsulates the per-project loop: stage every `*.json` under the
+two configured directories into a clean tempdir (filtering out
+sidecar files), run `parse_jira`, row-bind, and de-duplicate on
+`issue_key` (issues) and `(issue_key, comment_id)` (comments).
+
+# Configuration
+
+```{r}
+tool_conf  <- parse_config("../tools.yml")
+helix_conf <- parse_config("../conf/helix.yml")
+camel_conf <- parse_config("../conf/camel.yml")
+```
+
+# Extract Helix
+
+```{r}
+helix_jira <- lift_project_jira(helix_conf)
+helix_jira$issues[,   project := "helix"]
+helix_jira$comments[, project := "helix"]
+cat("helix issues:  ", nrow(helix_jira$issues),   "\n")
+cat("helix comments:", nrow(helix_jira$comments), "\n")
+```
+
+# Extract Camel
+
+```{r}
+camel_jira <- lift_project_jira(camel_conf)
+camel_jira$issues[,   project := "camel"]
+camel_jira$comments[, project := "camel"]
+cat("camel issues:  ", nrow(camel_jira$issues),   "\n")
+cat("camel comments:", nrow(camel_jira$comments), "\n")
+```
+
+# Summaries
+
+## Issue-type distribution (Helix)
+
+```{r}
+kable(helix_jira$issues[, .N, by = issue_type][order(-N)])
+```
+
+## Issue-type distribution (Camel)
+
+```{r}
+kable(camel_jira$issues[, .N, by = issue_type][order(-N)])
+```
+
+## Issue-status distribution (Helix)
+
+```{r}
+kable(helix_jira$issues[, .N, by = issue_status][order(-N)])
+```
+
+## Issue-status distribution (Camel)
+
+```{r}
+kable(camel_jira$issues[, .N, by = issue_status][order(-N)])
+```
+
+## Bug share (informs lift_bugs, lift_brooksq, lift_rework)
+
+```{r}
+bug_share <- function(dt, label) {
+  data.table(
+    project   = label,
+    n_issues  = nrow(dt),
+    n_bugs    = nrow(dt[issue_type == "Bug"]),
+    n_done    = nrow(dt[issue_status == "Done"]),
+    n_done_bug = nrow(dt[issue_type == "Bug" & issue_status == "Done"])
+  )
+}
+kable(rbind(
+  bug_share(helix_jira$issues, "helix"),
+  bug_share(camel_jira$issues, "camel")
+))
+```
+
+# Write outputs
+
+```{r}
+dir.create("../../core/paper/outputs", showWarnings = FALSE, recursive = TRUE)
+
+fwrite(helix_jira$issues,
+       "../../core/paper/outputs/lift_jira_helix_issues.csv")
+fwrite(helix_jira$comments,
+       "../../core/paper/outputs/lift_jira_helix_comments.csv")
+fwrite(camel_jira$issues,
+       "../../core/paper/outputs/lift_jira_camel_issues.csv")
+fwrite(camel_jira$comments,
+       "../../core/paper/outputs/lift_jira_camel_comments.csv")
+```
+
+# Notes for downstream lifts
+
+- Join key to gitlog: `commit_message_id_regex.issue_id`
+  (`HELIX-[0-9]+`, `CAMEL-[0-9]+`). `parse_commit_message_id` writes
+  the matched key into `commit_message_id`; that joins to
+  `issue_key` here.
+- `lift_brooksq` and `lift_rework` need `issue_type == "Bug"` rows.
+- `lift_bugs` may also need `issue_status == "Done"` (NOT
+  `c("Closed","Resolved")` — kaiaulu's `metric.R` bug).
+- For communication-graph lifts (e.g. `lift_congruence` jira mode),
+  `parse_jira_replies` consumes the same `parsed_jira` list shape
+  this notebook produces.

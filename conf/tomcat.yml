@@ -2,7 +2,7 @@ project:
   website: https://github.com/apache/tomcat
 
 version_control:
-  log: /Users/timm/gits/timm/icse27theories/data/tomcat/git_repo/.git
+  log: /Users/timm/gits/sci4seng/data/tomcat/git_repo/.git
   log_url: https://github.com/apache/tomcat
   branch:
     - master

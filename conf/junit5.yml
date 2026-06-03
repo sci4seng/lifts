@@ -2,7 +2,7 @@ project:
   website: https://github.com/junit-team/junit5
 
 version_control:
-  log: /Users/timm/gits/timm/icse27theories/data/junit5/git_repo/.git
+  log: /Users/timm/gits/sci4seng/data/junit5/git_repo/.git
   log_url: https://github.com/junit-team/junit5
   branch:
     - main

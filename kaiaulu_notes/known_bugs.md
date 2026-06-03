@@ -161,6 +161,79 @@ prints `[main] INFO …` lines and `Total count: …` summary lines
 RefactoringMiner directly via the launcher script with `-json <out>`,
 then use our own `lifts/functions.R` `flatten_refactoring_json()`.
 
+## NEW 2026-06-02: parse_jira() schema-shift, signature-shift, directory crash
+
+**Function**: `kaiaulu::parse_jira(json_folder_path)` — installed
+version (kaiaulu pkg in `/opt/homebrew/lib/R/4.6/site-library/`).
+
+Three independent issues found while writing `lift_jira.Rmd`.
+
+### (a) Signature mismatch with in-tree source
+
+A kaiaulu source-repo `R/parser.R:820` declares
+```r
+parse_jira <- function(json_path)         # takes a single FILE
+```
+The installed package binary declares
+```r
+parse_jira <- function(json_folder_path)  # takes a DIRECTORY
+```
+and internally `list.files(json_folder_path)` + loops. Any code
+written against the source-repo signature (one call per file) will
+fail with `Error: cannot open the connection` because the binary
+tries `read_json(<dir>)`.
+
+**Implication**: do NOT trust an out-of-date `R/parser.R` source tree
+as a spec for the installed pkg. Pin to one or the other; document
+the version skew.
+
+### (b) Schema-shift: base_info/ext_info → issues
+
+The older source-repo `parse_jira` expected
+```
+json_issue_comments[["base_info"]]   # one entry per issue
+json_issue_comments[["ext_info"]]    # one entry per issue
+```
+matching the (now-stale) `download_jira_data.Rmd` dump format.
+
+Installed `parse_jira` expects
+```
+json_issue_comments[["issues"]]      # JIRA REST v2 native shape
+```
+The Apache Helix and Camel dumps on disk are JIRA REST native (keys:
+`expand startAt maxResults total issues`), so the installed parser
+works; the older source-repo parser would not.
+
+### (c) `.DS_Store` (or any non-JSON file) crashes parser
+
+Installed parser does
+```r
+file_list <- list.files(json_folder_path)   # no pattern filter
+for (filename in file_list) {
+  parsed_data <- jira_parse_issues(current_json)  # read_json
+}
+```
+Mac `.DS_Store` in the dir → `jsonlite::read_json` aborts with
+`cannot open the connection` (misleading — file IS openable, the
+JSON parser just bails on the binary). Same for any stray non-JSON
+file.
+
+**Recommended fixes**:
+- (a)+(b): release-tag the source repo to match the installed binary,
+  or republish the pkg from current source.
+- (c): `list.files(json_folder_path, pattern = "\\.json$")`.
+
+**Workaround in our project** (see `lifts/R/functions.R:lift_project_jira`):
+stage `*.json` from each configured directory into a clean tempdir,
+then pass the tempdir to `parse_jira`. Also dedup on `issue_key`
+after rbind so the issues + issue_comments dirs don't double-count.
+
+**Knock-on note for metric.R bug #1 above**: the installed parser's
+`issue_status` is `statusCategory.name` (`"Done" / "In Progress" /
+"To Do" / "Undefined"`). Filtering on
+`c("Closed","Resolved")` matches nothing — confirmed on Helix
+(97 issues) and Camel (500 issues). Use `issue_status == "Done"`.
+
 ## 2026-05-25 sanity-check summary (SME's §4 verification)
 
 Five tools required; calling kaiaulu wrappers without prior knowledge

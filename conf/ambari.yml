@@ -2,7 +2,7 @@ project:
   website: https://ambari.apache.org
 
 version_control:
-  log: /Users/timm/gits/timm/icse27theories/data/ambari/git_repo/.git
+  log: /Users/timm/gits/sci4seng/data/ambari/git_repo/.git
   log_url: https://github.com/apache/ambari
   branch:
     - trunk

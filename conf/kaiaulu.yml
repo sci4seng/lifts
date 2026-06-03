@@ -2,7 +2,7 @@ project:
   website: https://github.com/apache/kaiaulu
 
 version_control:
-  log: /Users/timm/gits/timm/icse27theories/data/kaiaulu/git_repo/.git
+  log: /Users/timm/gits/sci4seng/data/kaiaulu/git_repo/.git
   log_url: https://github.com/apache/kaiaulu
   branch:
     - master

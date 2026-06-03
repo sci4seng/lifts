@@ -2,10 +2,18 @@ project:
   website: https://github.com/apache/camel
 
 version_control:
-  log: /Users/timm/gits/timm/icse27theories/data/camel/git_repo/.git
+  log: /Users/timm/gits/sci4seng/data/camel/git_repo/.git
   log_url: https://github.com/apache/camel
   branch:
     - HEAD
+
+issue_tracker:
+  jira:
+    project_key_1:
+      domain: https://issues.apache.org/jira
+      project_key: CAMEL
+      issues: /Users/timm/gits/sci4seng/data/camel/jira/issues/
+      issue_comments: /Users/timm/gits/sci4seng/data/camel/jira/issue_comments/
 
 commit_message_id_regex:
   issue_id: "CAMEL-[0-9]+"
