@@ -370,6 +370,8 @@ detect_radio_silence <- function(edges) {
 #' @export
 compute_cohorts <- function(project_git, jr_max_days = 365,
                             sr_min_days = 1095) {
+  # Tenure = last - first observed commit, NOT (now - first). A dev who
+  # stopped contributing 2 years ago should not keep accumulating tenure.
   per_dev <- project_git[, .(
     first_commit = min(author_datetimetz),
     last_commit  = max(author_datetimetz),
@@ -377,6 +379,9 @@ compute_cohorts <- function(project_git, jr_max_days = 365,
   ), by = identity_id]
   per_dev[, tenure_days := as.numeric(difftime(last_commit, first_commit,
                                                units = "days"))]
+  # Three-bucket fcase reads top-down: Jr first, then Sr, then everything
+  # in between is Tr. The defaults (365d / 1095d = 1y / 3y) match the
+  # learn model's pipeline-stock framing in paper/sd.py.
   per_dev[, cohort := fcase(
     tenure_days <  jr_max_days,  "Jr",
     tenure_days >= sr_min_days,  "Sr",
@@ -430,6 +435,9 @@ estimate_transition_rates <- function(project_git, jr_max_days = 365,
   train_n   <- promote_n   <- integer(0)
   jr_at_t   <- tr_at_t     <- integer(0)
   for (i in seq_len(length(cuts) - 1)) {
+    # Inner join on identity_id: a dev must exist at BOTH slice endpoints
+    # to count as a transition. Devs who appear in c1 only (just-joined)
+    # don't have a prior cohort to graduate FROM.
     c0 <- cohorts_at(cuts[i])
     c1 <- cohorts_at(cuts[i + 1])
     m  <- merge(c0, c1, by = "identity_id",
@@ -440,8 +448,12 @@ estimate_transition_rates <- function(project_git, jr_max_days = 365,
     promote_n <- c(promote_n, sum(m$cohort_0 == "Tr" & m$cohort_1 == "Sr"))
   }
 
+  # Annualise: per-slice fractions extrapolated to per-year. Without this,
+  # a 90-day slice would underreport vs the SD model's per-year flow rate.
   annualise <- 365 / slice_days
   list(
+    # pmax(_, 1) guards against zero-denominator on empty slices; median
+    # over slices is more robust to outlier transitions than the mean.
     train_rate   = annualise * median(train_n   / pmax(jr_at_t, 1),
                                       na.rm = TRUE),
     promote_rate = annualise * median(promote_n / pmax(tr_at_t, 1),
@@ -464,6 +476,8 @@ estimate_transition_rates <- function(project_git, jr_max_days = 365,
 #' @return data.table with window_start, n_commits, n_intro_commits, failrate.
 #' @export
 compute_failrate_per_window <- function(szz, project_git, window_days = 90) {
+  # Dedupe gitlog by commit_hash — a single commit can appear N rows
+  # (one per touched file). We want commit-level failrate, not file-level.
   commits <- unique(project_git[, .(commit_hash, author_datetimetz)])
   intro_hashes <- unique(szz$introducing_commit_hash)
   commits[, has_intro := commit_hash %in% intro_hashes]
@@ -472,6 +486,9 @@ compute_failrate_per_window <- function(szz, project_git, window_days = 90) {
   start <- min(commits$author_datetimetz)
   end   <- max(commits$author_datetimetz)
   step  <- as.difftime(window_days, units = "days")
+  # Tumbling (non-overlapping) windows. Each commit contributes to exactly
+  # one window — important for the SD failrate to read as a steady-state
+  # fraction rather than a rolling-average artifact.
   windows <- seq(start, end, by = step)
   out <- lapply(windows, function(ws) {
     we <- ws + step
@@ -508,6 +525,9 @@ compute_failrate_per_window <- function(szz, project_git, window_days = 90) {
 compute_per_phase_defects <- function(szz, project_git, tag_dates) {
   tag_dates <- tag_dates[order(date)]
   phase_for <- function(ts) {
+    # findInterval returns 0 for timestamps STRICTLY before the first
+    # tag — bucket them into phase 1 (treat them as "pre-history of
+    # release 1") rather than dropping or NA-ing.
     idx <- findInterval(ts, tag_dates$date)
     idx[idx == 0] <- 1L
     tag_dates$tag[idx]
@@ -515,6 +535,9 @@ compute_per_phase_defects <- function(szz, project_git, tag_dates) {
   szz[, phase_intro := phase_for(introducing_date)]
   szz[, phase_fix   := phase_for(fixing_date)]
 
+  # Dedupe on introducing_commit_hash: one introducer can appear N times
+  # if it caused N fixes, but we count it ONCE per phase (injected==N
+  # would conflate "many bugs introduced" with "one bug caused many fixes").
   intro_per_phase <- unique(szz[, .(introducing_commit_hash, phase_intro,
                                     phase_fix)])
   out <- intro_per_phase[, .(
@@ -523,6 +546,9 @@ compute_per_phase_defects <- function(szz, project_git, tag_dates) {
     leaked   = sum(phase_intro != phase_fix, na.rm = TRUE)
   ), by = phase_intro]
   setnames(out, "phase_intro", "phase")
+  # tst_proxy = caught share. Calibrates the defmap model's `tst`
+  # testing-intensity parameter: 1.0 means every injected bug is caught
+  # before release; 0.0 means everything leaks.
   out[, tst_proxy := caught / pmax(injected, 1)]
   out
 }
@@ -549,19 +575,27 @@ compute_dora_metrics <- function(szz, project_git, tag_dates) {
                                    min(commits$author_datetimetz),
                                    units = "days"))
 
+  # arrival_rate = commits per day over the full repo lifespan. max(_, 1)
+  # guards a one-day-history degenerate (test repos) against div-by-zero.
   arrival_rate <- total_commits / max(span_days, 1)
 
-  # batch_size = total commits / (tags - 1)
+  # batch_size = commits between releases. n_tags-1 because N tags define
+  # N-1 inter-release intervals. NA when <2 tags (no measurable cadence).
   n_tags <- nrow(tag_dates)
   batch_size <- if (n_tags >= 2) total_commits / (n_tags - 1) else NA_real_
 
   n_fixes <- uniqueN(szz$fixing_commit_hash)
   cfr <- n_fixes / total_commits
 
+  # MTTR uses latency-per-pair (fix - intro). Filter negatives because
+  # SZZ can produce inverted pairs when a fix predates its mis-blamed
+  # introducer (renames, branch reordering).
   latencies <- as.numeric(difftime(szz$fixing_date, szz$introducing_date,
                                    units = "days"))
   latencies <- latencies[is.finite(latencies) & latencies >= 0]
   median_mttr <- if (length(latencies)) median(latencies) else NA_real_
+  # rec_rate = 1/MTTR so DORA's "recovery rate" reads as fixes-per-day
+  # (matches the SD model's flow-rate semantics where Rate × Stock = flow).
   rec_rate <- if (is.finite(median_mttr) && median_mttr > 0) 1 / median_mttr
               else NA_real_
 
@@ -584,17 +618,25 @@ compute_dora_metrics <- function(szz, project_git, tag_dates) {
 #' @return data.table with tag, date (POSIXct).
 #' @export
 get_tag_dates <- function(git_repo_path) {
+  # Strip trailing `/.git` so kaiaulu confs (which point at the .git dir)
+  # and worktree-rooted paths both resolve to the same `git -C` target.
   repo <- gsub("/\\.git/?$", "", git_repo_path)
+  # --sort=v:refname = SemVer-aware tag order (v1.2 before v1.10). NOT
+  # the same as chronological; final sort-by-date below fixes that.
   tags <- system2("git", c("-C", repo, "tag", "--sort=v:refname"),
                   stdout = TRUE)
   if (length(tags) == 0) return(data.table(tag = character(),
                                            date = as.POSIXct(character())))
+  # %ct = author commit time as Unix seconds (TZ-stable for cross-project
+  # comparison; %ci would emit a local-TZ string and need parsing).
   unix_ts <- vapply(tags, function(tg) {
     out <- system2("git",
                    c("-C", repo, "log", "-1", "--format=%ct", tg),
                    stdout = TRUE)
     if (length(out) == 0) NA_character_ else out[1]
   }, character(1))
+  # Sort chronologically — caller (compute_per_phase_defects) does a
+  # findInterval lookup that requires monotone-increasing dates.
   data.table(tag  = tags,
              date = as.POSIXct(as.numeric(unix_ts),
                                origin = "1970-01-01", tz = "UTC"))[
@@ -617,6 +659,9 @@ get_tag_dates <- function(git_repo_path) {
 #' @export
 compute_pay_rate <- function(project_git, refactorings,
                              window_days = 90) {
+  # Commit-level (not file-level) is the right granularity: pay_rate in
+  # the debt SD model is share of WORK that addresses debt, and one
+  # refactor-commit = one unit of work regardless of how many files it spans.
   commits <- unique(project_git[, .(commit_hash, author_datetimetz)])
   refactor_hashes <- unique(refactorings$commit_hash)
   commits[, has_refactor := commit_hash %in% refactor_hashes]
@@ -626,6 +671,10 @@ compute_pay_rate <- function(project_git, refactorings,
   end   <- max(commits$author_datetimetz)
   step  <- as.difftime(window_days, units = "days")
 
+  # Tumbling windows. Output one row per 90-day slice; aggregation up to
+  # a single pay_rate scalar is the caller's responsibility (median of
+  # window pay_rates is more robust to release-cycle bursts than overall
+  # mean).
   windows <- seq(start, end, by = step)
   out <- lapply(windows, function(ws) {
     we <- ws + step
@@ -656,10 +705,17 @@ compute_pay_rate <- function(project_git, refactorings,
 #' @export
 compute_born_rate_proxy <- function(project_git, window_days = 90,
                                     big_commit_files = 5) {
+  # Per-commit aggregate: files_touched = breadth, when = commit time.
+  # min(author_datetimetz) is a no-op for clean gitlogs (all rows of a
+  # commit share a date) but defensive against parser quirks.
   cs <- project_git[, .(
     files_touched = uniqueN(file_pathname),
     when          = min(author_datetimetz)
   ), by = commit_hash]
+  # "Big commit" = touches >= big_commit_files files. The 5-file default
+  # is the crude proxy for "shipping fast / introducing debt" — wider
+  # blast radius commits correlate weakly with debt accrual. NOT a
+  # ground-truth indicator; a better one would use RefMiner anti-refactors.
   cs[, big := files_touched >= big_commit_files]
 
   start <- min(cs$when); end <- max(cs$when)
@@ -752,7 +808,13 @@ run_refactoring_miner <- function(refminer_jar, git_repo_path,
 #'   refactoring_description, left_locations, right_locations.
 #' @export
 flatten_refactoring_json <- function(refminer_json_path) {
+  # simplifyVector=FALSE preserves the nested {commits → refactorings →
+  # leftSideLocations} structure as R lists; default TRUE coerces to
+  # arrays and loses the per-event grouping needed for the outer lapply.
   raw <- jsonlite::fromJSON(refminer_json_path, simplifyVector = FALSE)
+  # Outer lapply: one entry per COMMIT (may have 0+ refactorings).
+  # Inner lapply: one row per REFACTORING within that commit.
+  # Two-level structure flattens to a clean row-per-event data.table.
   rows <- lapply(raw$commits, function(c) {
     if (length(c$refactorings) == 0) return(NULL)
     rbindlist(lapply(c$refactorings, function(r) {
@@ -760,6 +822,9 @@ flatten_refactoring_json <- function(refminer_json_path) {
         commit_hash             = c$sha1,
         refactoring_type        = r$type,
         refactoring_description = r$description %||% NA_character_,
+        # Semicolon-join because multiple files can participate in one
+        # refactoring (e.g. Move Method has left = src file, right = dest).
+        # Comma would collide with later CSV serialisation.
         left_locations  = paste(sapply(r$leftSideLocations,  `[[`,
                                        "filePath"), collapse = ";"),
         right_locations = paste(sapply(r$rightSideLocations, `[[`,
@@ -785,8 +850,14 @@ flatten_refactoring_json <- function(refminer_json_path) {
 #' @export
 compute_file_bug_frequency <- function(project_git, jira_bugs,
                                        issue_id_regex) {
+  # commit_message_id is added upstream by parse_commit_message_id (the
+  # gitlog row carries the JIRA key extracted from the commit message
+  # via issue_id_regex). Match against jira_bugs$issue_key to find the
+  # commits that reference a Bug-typed issue.
   bug_keys <- jira_bugs$issue_key
   bug_commits <- project_git[commit_message_id %in% bug_keys]
+  # uniqueN(commit_hash) per file: count distinct bug-fixing commits, not
+  # row count. Same commit touching N files = N file_pathname rows.
   bug_commits[, .(bug_count = uniqueN(commit_hash)), by = file_pathname]
 }
 
