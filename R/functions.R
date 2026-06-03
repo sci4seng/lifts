@@ -28,17 +28,25 @@ require(magrittr)
 #'   author_name_email), first_commit_at, days_after_project_start.
 #' @export
 detect_late_hires <- function(project_git, min_project_age_days = 365) {
+  # Prefer identity_match'd id when present; otherwise raw email.
+  # Without identity_id, a dev appearing as both x@old.com and x@new.com
+  # would count as two distinct "first commits" → inflated hire count.
   id_col <- if ("identity_id" %in% names(project_git)) "identity_id"
             else "author_name_email"
 
+  # First commit per identity = individual's join date.
   first_commits <- project_git[, .(
     first_commit_at = min(author_datetimetz)
   ), by = id_col]
 
+  # Earliest commit across whole repo = project birth.
   project_start <- min(project_git$author_datetimetz)
   first_commits[, days_after_project_start :=
     as.numeric(difftime(first_commit_at, project_start, units = "days"))]
 
+  # Drop founders + early hires; keep only late arrivals whose first commit
+  # is >= min_project_age_days after project birth (Brooks's "added to a
+  # late project" cohort).
   first_commits[days_after_project_start >= min_project_age_days]
 }
 
@@ -59,16 +67,23 @@ compute_velocity_changes <- function(project_git, late_hires,
   id_col <- if ("identity_id" %in% names(project_git)) "identity_id"
             else "author_name_email"
 
+  # One row per late hire. The downstream brooks_tax is the relative
+  # change (pre - post) / pre — Brooks's claim is post < pre because
+  # new hires distract veterans (training drag + quadratic comm).
   results <- lapply(seq_len(nrow(late_hires)), function(i) {
     hire_id   <- late_hires[i, get(id_col)]
     hire_at   <- late_hires[i, first_commit_at]
     win_start <- hire_at - as.difftime(window_days, units = "days")
     win_end   <- hire_at + as.difftime(window_days, units = "days")
 
-    # Veterans = devs who joined strictly before hire_at
+    # Veterans = devs who joined strictly before this hire. Excludes the
+    # hire and anyone who joined after — keeps "veteran" measurement
+    # uncontaminated by later cohorts arriving in the post-window.
     veterans <- project_git[author_datetimetz < hire_at,
                             unique(get(id_col))]
 
+    # Count distinct commits (not commit-touches) so a single big merge
+    # doesn't inflate either window.
     pre_commits <- project_git[
       get(id_col) %in% veterans &
       author_datetimetz >= win_start &
@@ -82,6 +97,7 @@ compute_velocity_changes <- function(project_git, late_hires,
       uniqueN(commit_hash)
     ]
 
+    # Velocity = commits/day so window_days choice cancels in the ratio.
     data.table(
       id            = hire_id,
       hire_at       = hire_at,
@@ -106,7 +122,12 @@ compute_velocity_changes <- function(project_git, late_hires,
 #' @return data.table with the same columns, dates parsed to POSIXct.
 #' @export
 parse_szz_bugfixes <- function(szz_csv_path) {
+  # SZZ pairs come from an external PyDriller pass (scripts/szz_pass.py)
+  # because B-SZZ requires git-blame walks over modified lines — not
+  # cheap in R. We just read the CSV and normalize dates to UTC.
   dt <- data.table::fread(szz_csv_path)
+  # UTC normalization: SZZ output may carry mixed TZs across projects;
+  # UTC is the only safe reference for cross-project comparison.
   dt[, fixing_date       := as.POSIXct(fixing_date,       tz = "UTC")]
   dt[, introducing_date  := as.POSIXct(introducing_date,  tz = "UTC")]
   dt
@@ -129,11 +150,16 @@ compute_injection_changes <- function(szz, late_hires,
                                       window_days = 90) {
   id_col <- if ("identity_id" %in% names(late_hires)) "identity_id"
             else "author_name_email"
+  # Dedupe: an introducing commit can appear N times if it caused N fixes.
+  # We want commits-introduced-per-day, not fixes-per-day, so collapse.
   intros <- unique(szz[, .(introducing_commit_hash, introducing_date)])
   results <- lapply(seq_len(nrow(late_hires)), function(i) {
     hire_at   <- late_hires[i, first_commit_at]
     win_start <- hire_at - as.difftime(window_days, units = "days")
     win_end   <- hire_at + as.difftime(window_days, units = "days")
+    # Count introductions in pre vs post window. Brooksq's thesis says
+    # post > pre because new hires inject bugs at a higher rate than
+    # the steady-state veteran cohort.
     pre_n  <- intros[introducing_date >= win_start &
                      introducing_date <  hire_at, .N]
     post_n <- intros[introducing_date >  hire_at &
@@ -143,6 +169,7 @@ compute_injection_changes <- function(szz, late_hires,
       hire_at       = hire_at,
       pre_intros    = pre_n,
       post_intros   = post_n,
+      # Rate = intros/day — window_days cancels out in the pre/post ratio.
       inj_rate_pre  = pre_n  / window_days,
       inj_rate_post = post_n / window_days
     )
@@ -184,12 +211,17 @@ estimate_leak_rate <- function(szz, latency_days = 30) {
 #'   (message_id, reply_to, sender, ...).
 #' @export
 parse_mbox_dir <- function(perceval_path, mbox_dir) {
+  # kaiaulu's parse_mbox handles ONE file. Many projects (apache/...)
+  # ship month-bucketed archives — we need the union. fill=TRUE because
+  # different .mbox files can have minor column-set drift.
   files <- list.files(mbox_dir, pattern = "\\.mbox$",
                       full.names = TRUE)
   if (length(files) == 0) {
     stop("no .mbox files in ", mbox_dir)
   }
   rbindlist(lapply(files, function(f) {
+    # tryCatch + warn-and-skip: a single corrupt mbox shouldn't kill
+    # the lift on the other 100+ month buckets.
     tryCatch(parse_mbox(perceval_path, f),
              error = function(e) {
                warning(sprintf("parse_mbox failed on %s: %s",
@@ -214,15 +246,23 @@ parse_mbox_dir <- function(perceval_path, mbox_dir) {
 #' @return data.table with cols src_id, dst_id, weight.
 #' @export
 build_reply_edges <- function(msgs) {
+  # message-id → identity lookup. Each message has its own sender; a
+  # reply pivots to that sender's identity via the parent message-id.
   mid_to_id <- setNames(msgs$identity_id, msgs$reply_id)
   replies <- msgs[!is.na(in_reply_to_id) & in_reply_to_id != "",
                   .(child_id = identity_id, parent_mid = in_reply_to_id)]
   replies[, parent_id := mid_to_id[parent_mid]]
+  # Drop dangling refs (parent message not in our archive) + self-replies
+  # (dev replying to own thread = no info about coordination).
   replies <- replies[!is.na(parent_id) & parent_id != child_id]
+  # Symmetrise: undirected graph for community detection.
+  # pmin/pmax gives canonical edge orientation so (a,b) and (b,a) merge.
   replies[, `:=`(
     src_id = pmin(child_id, parent_id),
     dst_id = pmax(child_id, parent_id)
   )]
+  # Edge weight = reply-count for this dyad — Louvain uses it as
+  # connection strength.
   replies[, .(weight = .N), by = .(src_id, dst_id)]
 }
 
@@ -247,9 +287,15 @@ detect_radio_silence <- function(edges) {
   g <- igraph::graph_from_data_frame(
     d = edges[, .(src_id, dst_id, weight)],
     directed = FALSE)
+  # Restrict to the largest connected component. Tiny disconnected
+  # islands (1-2 devs who only emailed each other) can't carry the
+  # "boundary spanner" concept the smell tests for.
   ccs <- igraph::components(g)
   main_ids <- which(ccs$membership == which.max(ccs$csize))
   g_main <- igraph::induced_subgraph(g, main_ids)
+  # Louvain = standard modularity-maximisation community detection.
+  # Weights = reply counts; ensures heavy back-and-forth dyads stay
+  # in the same cluster.
   louv <- igraph::cluster_louvain(g_main,
                                   weights = igraph::E(g_main)$weight)
   membership <- igraph::membership(louv)
@@ -262,6 +308,8 @@ detect_radio_silence <- function(edges) {
 
   for (cid in unique(membership)) {
     devs <- ids[membership == cid]
+    # Singleton cluster = the only dev in it IS by definition the
+    # only bridge to anywhere else. Trivial broker.
     if (length(devs) == 1) {
       brokers <- c(brokers, devs)
       incidents <- rbind(incidents,
@@ -269,13 +317,13 @@ detect_radio_silence <- function(edges) {
                                     bridge_to = NA_integer_))
       next
     }
-    # outgoing edges per (vert, target-cluster)
+    # Tally: per (vert, target-cluster), how many edges cross over?
     out_counts <- list()
     for (v in devs) {
       nbrs <- igraph::neighbors(g_main, v)
       nbr_ids <- ids[as.integer(nbrs)]
       nbr_cls <- membership[nbr_ids]
-      ext <- nbr_cls[nbr_cls != cid]
+      ext <- nbr_cls[nbr_cls != cid]   # external-cluster edges only
       if (length(ext) == 0) next
       for (oc in unique(ext)) {
         key <- paste(oc, v, sep = "|")
@@ -283,7 +331,9 @@ detect_radio_silence <- function(edges) {
                              sum(ext == oc)
       }
     }
-    # for each external cluster, find which devs have exactly 1 edge
+    # For each external cluster, if THIS cluster's total bridge-link
+    # count to that target == 1, then the single dev carrying it is the
+    # radio-silence broker — their absence severs the channel.
     by_target <- split(names(out_counts), sapply(strsplit(names(out_counts), "\\|"), `[`, 1))
     for (target_str in names(by_target)) {
       total_links <- sum(unlist(out_counts[by_target[[target_str]]]))
@@ -300,7 +350,7 @@ detect_radio_silence <- function(edges) {
   list(
     graph         = g_main,
     partition     = membership,
-    brokers       = unique(brokers),
+    brokers       = unique(brokers),  # dedupe: a dev may bridge to N clusters
     incidents     = incidents,
     cluster_sizes = sort(as.integer(table(membership)), decreasing = TRUE)
   )
@@ -747,6 +797,9 @@ compute_file_bug_frequency <- function(project_git, jira_bugs,
 #' @return data.table with file_pathname, churn_score in [0,1].
 #' @export
 compute_file_churn <- function(project_git, window_days = 180) {
+  # Cutoff is anchored to the LATEST commit in the repo, not wall-clock
+  # now. Important for stale snapshots — a 2020 archive shouldn't
+  # report 0 churn just because "now" is 2026.
   cutoff <- max(project_git$author_datetimetz) -
            as.difftime(window_days, units = "days")
   recent <- project_git[author_datetimetz >= cutoff]
@@ -754,9 +807,13 @@ compute_file_churn <- function(project_git, window_days = 180) {
                            by = file_pathname]
   total_commits  <- project_git[, .(total_n = uniqueN(commit_hash)),
                                 by = file_pathname]
+  # all.y=TRUE: keep files with zero recent activity (churn_score=0)
+  # so the partition function can place them in Other rather than dropping.
   m <- merge(recent_commits, total_commits, by = "file_pathname",
              all.y = TRUE)
   m[is.na(recent_n), recent_n := 0]
+  # Ratio (recent / total) is project-size invariant — comparable across
+  # 100-file and 100k-file projects.
   m[, churn_score := recent_n / total_n]
   m[, .(file_pathname, churn_score)]
 }
@@ -782,13 +839,24 @@ assign_file_partition <- function(patterned_files,
                                   file_churn,
                                   legacy_bug_threshold  = 5,
                                   drift_churn_threshold = 0.7) {
+  # Union of all files that have ANY signal (bug or churn). Files with
+  # neither are by definition Other and get dropped — they don't
+  # contribute to any stock count.
   all_files <- union(file_bug_freq$file_pathname,
                      file_churn$file_pathname)
   out <- data.table(file_pathname = all_files)
   out <- merge(out, file_bug_freq, by = "file_pathname", all.x = TRUE)
   out <- merge(out, file_churn,    by = "file_pathname", all.x = TRUE)
+  # Missing signals → 0, NOT NA. Allows threshold comparisons to work
+  # without per-row NA-handling later.
   out[is.na(bug_count), bug_count := 0]
   out[is.na(churn_score), churn_score := 0]
+  # Priority order matters: Patterned wins over Legacy wins over Drift.
+  # A file in a GoF pattern is "good" regardless of how buggy or churning
+  # it is (the pattern is the architectural classification, not the
+  # quality metric). Drift only applies to files NOT already in the
+  # other two categories — recent activity alone doesn't make a file
+  # legacy or patterned.
   out[, stock := fcase(
     file_pathname %in% patterned_files,                       "Patterned",
     bug_count    >= legacy_bug_threshold,                     "Legacy",
