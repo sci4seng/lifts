@@ -24,7 +24,7 @@ source("functions.R")
 
 # Introduction
 
-The `archpat` model (Ric Kazman's claim) tests whether design
+The `archpat` model (architect Kazman's claim) tests whether design
 patterns applied to an already-bad codebase can pay down architectural
 debt. The SD form (`models/sd.py:archpat()`) has three architectural
 stocks plus a Debt accumulator:

@@ -1,6 +1,6 @@
 # Known kaiaulu inconsistencies found during the May 2026 audit
 
-Items worth raising with Carlos as kaiaulu issues. Each one is verified
+Items worth raising with SME as kaiaulu issues. Each one is verified
 by reading the source.
 
 ## 1. parse_jira() / metric_file_bug_frequency() filter mismatch

@@ -223,7 +223,7 @@ footer{{margin-top:3em;padding-top:1em;border-top:1px solid #ddd;color:#666;font
 <strong>Methodological substitution &mdash; read this first.</strong>
 This run uses <em>heuristic</em> stand-ins for two of the three
 steps of the canonical kaiaulu <code>lift_archpat.Rmd</code> pipeline.
-Carlos &mdash; this is the methodology surface you'll want to argue
+SME &mdash; this is the methodology surface you'll want to argue
 with. Each substitution is named, the canonical step it replaces is
 cited, and the known bias is spelled out.
 
