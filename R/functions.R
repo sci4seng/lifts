@@ -1125,3 +1125,70 @@ compute_author_span_rate <- function(project_git) {
     mature_rate    = if (mean_span > 0) 1 / mean_span else 0
   )
 }
+
+# ---- archpat per-region commit rate helpers ------------------------------
+
+#' Compute Per-Region Monthly Commit Rates for archpat
+#'
+#' For the archpat SD model, lift the model's `gen_pat` (items
+#' shipped per patterned module per tick) and `gen_leg` (same for
+#' legacy) from gitlog volume. Each file path's first directory
+#' segment is the module name; a commit is patterned if any
+#' touched module is in \code{patterned_modules}, otherwise
+#' legacy.
+#'
+#' Both rates are commits-per-module-per-month, smoothed over the
+#' set of (year-month, module) cells that ever saw a commit. The
+#' ratio \code{gen_pat / gen_leg} grounds the archpat thesis that
+#' patterned regions ship faster than legacy regions.
+#'
+#' @param project_git A gitlog data.table with \code{commit_hash},
+#'   \code{file_pathname} (or \code{file_path}), and
+#'   \code{author_datetimetz} columns. Typically the
+#'   \code{$gitlog_files} output of kaiaulu::parse_gitlog (one row
+#'   per (commit, file) pair).
+#' @param patterned_modules Character vector of patterned module
+#'   names (top-level directory segments). Often the output of
+#'   the snapshot-based archpat lift.
+#' @return 1-row data.table with gen_pat_proxy, gen_leg_proxy,
+#'   gen_pat_leg_ratio, n_pat_modules, n_leg_modules, months_seen.
+#' @export
+compute_per_region_commit_rates <- function(project_git,
+                                            patterned_modules) {
+  path_col <- if ("file_pathname" %in% names(project_git))
+                "file_pathname"
+              else if ("file_path" %in% names(project_git))
+                "file_path"
+              else stop("project_git lacks file_pathname / file_path")
+
+  # First path segment = module name (archpat module-prefix slicing).
+  modules <- vapply(project_git[[path_col]], function(p) {
+    if (is.na(p) || p == "") "" else strsplit(p, "/", fixed = TRUE)[[1]][1]
+  }, character(1))
+  ym <- format(project_git$author_datetimetz, "%Y-%m")
+  is_pat <- modules %in% patterned_modules
+  is_leg <- !is_pat & modules != ""
+
+  pat_cells <- unique(data.table(ym = ym[is_pat],
+                                 module = modules[is_pat],
+                                 commit_hash = project_git$commit_hash[is_pat]))
+  leg_cells <- unique(data.table(ym = ym[is_leg],
+                                 module = modules[is_leg],
+                                 commit_hash = project_git$commit_hash[is_leg]))
+
+  n_pat_modules <- uniqueN(pat_cells$module)
+  n_leg_modules <- uniqueN(leg_cells$module)
+  months_seen   <- uniqueN(c(pat_cells$ym, leg_cells$ym))
+
+  gen_pat <- nrow(pat_cells) / max(1, n_pat_modules * months_seen)
+  gen_leg <- nrow(leg_cells) / max(1, n_leg_modules * months_seen)
+  data.table(
+    gen_pat_proxy     = gen_pat,
+    gen_leg_proxy     = gen_leg,
+    gen_pat_leg_ratio = if (gen_leg > 0) gen_pat / gen_leg
+                        else NA_real_,
+    n_pat_modules     = n_pat_modules,
+    n_leg_modules     = n_leg_modules,
+    months_seen       = months_seen
+  )
+}

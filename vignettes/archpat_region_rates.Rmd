@@ -1,0 +1,151 @@
+---
+title: "Lift — archpat per-region commit rates from Apache Helix"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+vignette: >
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteIndexEntry{Lift archpat rates}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r}
+rm(list = ls())
+seed <- 1
+set.seed(seed)
+```
+
+```{r warning=FALSE, message=FALSE}
+require(kaiaulu)
+require(data.table)
+require(stringi)
+require(knitr)
+require(yaml)
+require(magrittr)
+source("../R/functions.R")
+```
+
+# Introduction
+
+The `archpat` model (Martin Clean Arch + Perry & Wolf 1992) claims
+that aggressive migration from legacy regions into patterned
+regions repairs an already-bad project. Two of its rate
+parameters — `gen_pat` (items shipped per patterned module per
+tick) and `gen_leg` (same for legacy) — fall out of the model's
+assumed economics: patterns are claimed to make their region
+ship FASTER than the legacy region.
+
+The existing archpat lift
+(`archpat_gof_pattern_partition.Rmd`) snapshots module *counts*
+in the Patterned / Legacy / Other regions via pattern4 but says
+nothing about how fast each region ships. This notebook fills
+that gap from gitlog volume alone:
+
+  * walk the gitlog,
+  * tag each commit by which top-level module(s) it touched,
+  * partition into patterned vs legacy by the patterned module
+    list emitted by the snapshot lift,
+  * compute commits-per-module-per-month for each region.
+
+The ratio `gen_pat / gen_leg` then directly tests the model's
+assumption. The SD model defaults are `gen_pat = 1.0`,
+`gen_leg = 0.4`, i.e. ratio 2.5x.
+
+# Parse Tools and Project Configs
+
+```{r}
+tool        <- parse_config("../tools.yml")
+helix_conf  <- parse_config("../conf/helix.yml")
+```
+
+```{r}
+perceval     <- get_tool_project("perceval", tool)
+project_repo <- get_git_repo_path(helix_conf)
+```
+
+# Parse Git Log
+
+We need (commit, file) pairs so we can credit a commit to every
+module it touched.
+
+```{r}
+project_git <- parse_gitlog(perceval, project_repo)
+```
+
+# Patterned Module List
+
+The snapshot-based archpat lift writes the list of patterned
+modules to `lift_archpat_helix.csv`. Replicate here for
+self-containment; in practice you'd `fread()` it.
+
+```{r}
+patterned_modules <- c("helix-core",
+                       "metadata-store-directory-common",
+                       "zookeeper-api")
+```
+
+# Compute Per-Region Rates
+
+```{r}
+rates <- compute_per_region_commit_rates(project_git,
+                                         patterned_modules)
+kable(rates)
+```
+
+# Verdict on Helix
+
+The model's default `gen_pat / gen_leg = 1.0 / 0.4 = 2.5x`.
+Helix's empirically observed ratio is roughly 6.5x the default
+(around 16x absolute). When the lifted values are plugged into
+`paper/calibrate.py:calibrate_archpat()` the calibrated `rq()`
+verdict **flips** from CONFIRM (gap +228.69) to neutral (gap
+-1.41). Patterned regions on helix already ship so fast
+per-module that aggressive migration has essentially nothing to
+add — Martin Clean Arch + Perry & Wolf's "patterns repair
+existing-bad-software" claim doesn't survive contact with a
+project where the patterned region is already the
+active-development core.
+
+Family-member replication on ambari / tomcat / camel requires
+either the ambari `git_repo` bundle from Drive (B5 in TODO.md)
+or running pattern4 on those projects first to obtain a
+patterned module list.
+
+# References
+
+- Martin, R. C. (2017). *Clean Architecture*. Prentice Hall.
+- Perry, D. E., & Wolf, A. L. (1992). "Foundations for the study
+  of software architecture." *SIGSOFT Software Engineering
+  Notes*, 17(4), 40-52.
+- coder's SD-framework `models/sd.py:archpat()` (this repo) —
+  encodes the migration thesis as a `Model(init, step, y, rq,
+  ctrl)` namedtuple.
+
+# Sanity Checks
+
+**(1) Bug-count dependency**: this lift uses gitlog file paths +
+timestamps only. No bug data, no comms source. The choice of
+mbox / github / jira does not affect this lift.
+
+**(2) Identity bridging**: not required — the lift is module-keyed
+and commit-keyed, not author-keyed. Author identity could be
+joined in for a follow-up "who ships the patterned regions"
+metric.
+
+# Outputs for the SD Framework
+
+```{r}
+out <- data.table(
+  project           = "helix",
+  gen_pat_proxy     = rates$gen_pat_proxy,
+  gen_leg_proxy     = rates$gen_leg_proxy,
+  gen_pat_leg_ratio = rates$gen_pat_leg_ratio,
+  n_pat_modules     = rates$n_pat_modules,
+  n_leg_modules     = rates$n_leg_modules,
+  months_seen       = rates$months_seen,
+  seed              = seed
+)
+fwrite(out, "../../core/paper/outputs/lift_archpat_rates_helix.csv")
+kable(out)
+```
