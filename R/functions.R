@@ -1039,3 +1039,89 @@ merge_commit_dates <- function(refactorings, project_git) {
   m <- merge(refactorings, hashes, by = "commit_hash", all.x = TRUE)
   m$author_datetimetz
 }
+
+# ---- aiwork model helpers (gitlog churn + per-author span) ---------------
+
+#' Default Subject-Line Pattern for Churn Detection
+#'
+#' Borrowed from common revert / rollback / amend conventions. Matches
+#' subject lines that signal the author replaced earlier work rather
+#' than producing net-new output. Case-insensitive.
+#'
+#' @export
+AIWORK_CHURN_RX <- paste(
+  "\\b(revert|rollback|undo|reset|fix typo|backout|reapply|",
+  "re-apply|amend|hotfix)\\b",
+  sep = "")
+
+#' Count Churn Commits in a Git Log
+#'
+#' Flags commits whose subject matches a churn pattern (revert / undo
+#' / hotfix etc.). Returns (n_churn, n_commits, churn_base) where
+#' \code{churn_base} is the share of all commits that are churn.
+#'
+#' GitClear / METR treat AI-driven churn as a multiplicative inflation
+#' on top of this no-AI baseline, so the lifted \code{churn_base} can
+#' calibrate the \code{aiwork} model's baseline churn parameter.
+#'
+#' @param project_git A gitlog data.table with a \code{commit_message}
+#'   (or \code{message}) column. The first line of the message is
+#'   treated as the subject.
+#' @param pattern A regex string; defaults to \code{AIWORK_CHURN_RX}.
+#' @return A 1-row data.table with n_churn, n_commits, churn_base.
+#' @export
+detect_churn_commits <- function(project_git,
+                                 pattern = AIWORK_CHURN_RX) {
+  msg_col <- if ("commit_message" %in% names(project_git))
+               "commit_message"
+             else if ("message" %in% names(project_git))
+               "message"
+             else stop("project_git lacks commit_message / message")
+
+  # Subject = first line of the commit message. Some parsers strip the
+  # newline; in that case the whole message is the subject.
+  subjects <- vapply(project_git[[msg_col]], function(m) {
+    if (is.na(m)) "" else stringi::stri_split_lines1(m)[1]
+  }, character(1))
+
+  n_commits <- length(subjects)
+  is_churn  <- stringi::stri_detect_regex(subjects, pattern,
+                                          opts_regex = stringi::stri_opts_regex(case_insensitive = TRUE))
+  n_churn   <- sum(is_churn, na.rm = TRUE)
+  data.table(
+    n_commits  = n_commits,
+    n_churn    = n_churn,
+    churn_base = if (n_commits > 0) n_churn / n_commits else 0
+  )
+}
+
+#' Compute Per-Author Span Rate (aiwork mature_rate proxy)
+#'
+#' For each author, span = days between their first and last commit.
+#' Returns (mean_span_days, n_authors, mature_rate) where
+#' \code{mature_rate = 1 / mean_span_days} is the proxy used to
+#' calibrate \code{aiwork}'s Wip -> Kept transition rate. Authors
+#' with only one commit (span = 0) are dropped from the mean.
+#'
+#' @param project_git A gitlog data.table with author and
+#'   author_datetimetz columns. Uses identity_id if present.
+#' @return 1-row data.table with mean_span_days, n_authors,
+#'   mature_rate.
+#' @export
+compute_author_span_rate <- function(project_git) {
+  id_col <- if ("identity_id" %in% names(project_git)) "identity_id"
+            else "author_name_email"
+  spans <- project_git[, .(
+    first_at = min(author_datetimetz),
+    last_at  = max(author_datetimetz)
+  ), by = id_col]
+  spans[, span_days := as.numeric(difftime(last_at, first_at,
+                                           units = "days"))]
+  active <- spans[span_days > 0]
+  mean_span <- if (nrow(active) > 0) mean(active$span_days) else 0
+  data.table(
+    n_authors      = nrow(spans),
+    mean_span_days = mean_span,
+    mature_rate    = if (mean_span > 0) 1 / mean_span else 0
+  )
+}
